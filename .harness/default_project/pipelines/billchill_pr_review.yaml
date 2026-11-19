@@ -1,0 +1,59 @@
+pipeline:
+  stages:
+    - steps:
+        - run:
+            script: |-
+              echo "Issue title: $ISSUE_TITLE"
+              echo "Issue body: $ISSUE_BODY"
+              echo "PR title: $PR_TITLE"
+              echo "PR body: $PR_BODY"
+            env:
+              ISSUE_TITLE: <+trigger.payload.issue.title>
+              ISSUE_BODY: <+trigger.payload.issue.body>
+              PR_TITLE: <+trigger.payload.pull_request.title>
+              PR_BODY: <+trigger.payload.pull_request.body>
+          name: Init
+          id: Init
+        - name: fetch pr diff
+          run:
+            script: |-
+              TOKEN=$(printf '%s' "$GITHUB_TOKEN" | tr -d '[:space:]')
+              API="https://api.github.com/repos/$REPO/pulls/$PR_NUMBER"
+              echo "Fetching $API"
+              printf 'Title: %s\n\nDescription:\n%s\n' "$PR_TITLE" "$PR_BODY" > /harness/pr_info.txt
+              curl -sS -f -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github.v3.diff" \
+                "$API" | head -c 300000 > /harness/pr.diff
+              echo "Diff size: $(wc -c < /harness/pr.diff) bytes"
+            env:
+              GITHUB_TOKEN: <+secrets.getValue("github_repo_token")>
+              REPO: <+trigger.payload.repository.full_name>
+              PR_NUMBER: <+trigger.payload.pull_request.number>
+              PR_TITLE: <+trigger.payload.pull_request.title>
+              PR_BODY: <+trigger.payload.pull_request.body>
+          id: fetch_diff
+        - name: review pr
+          template:
+            uses: ca_pr_change_reviewer@1.0.0
+          id: review_pr
+        - name: comment on pr
+          run:
+            script: |-
+              URL="https://api.github.com/repos/$REPO/issues/$PR_NUMBER/comments"
+              TOKEN=$(printf '%s' "$GITHUB_TOKEN" | tr -d '[:space:]')
+              echo "Repo: $REPO"
+              echo "PR number: $PR_NUMBER"
+              echo "URL: $URL"
+              BODY=$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\t/\\t/g' /harness/review.md | awk '{printf "%s\\n", $0}')
+              curl -sS -f -X POST \
+                -H "Authorization: Bearer $TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "$URL" \
+                -d "{\"body\": \"## AI Review\\n\\n$BODY\"}"
+            env:
+              GITHUB_TOKEN: <+secrets.getValue("github_repo_token")>
+              REPO: <+trigger.payload.repository.full_name>
+              PR_NUMBER: <+trigger.payload.pull_request.number>
+          id: comment_pr
+      name: Review
+      id: Review
